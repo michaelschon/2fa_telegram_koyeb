@@ -3,162 +3,149 @@ import pyotp
 import os
 import socket
 import subprocess
+import threading
 from datetime import timedelta
-import requests
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
-# Substitua pelo token do seu bot, obtido do BotFather no Telegram
-BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN') # O Render vai injetar isso
+# ── Variáveis de ambiente ─────────────────────────────────
+BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN')
 if not BOT_TOKEN:
-    raise ValueError("TELEGRAM_BOT_TOKEN environment variable not set.")
-    
-SECRET_KEY = os.environ.get('TELEGRAM_SECRET_KEY') # O Render vai injetar isso
+    raise ValueError("TELEGRAM_BOT_TOKEN nao definido.")
+
+SECRET_KEY = os.environ.get('TELEGRAM_SECRET_KEY')
 if not SECRET_KEY:
-    raise ValueError("TELEGRAM_SECRET_KEY environment variable not set.")
+    raise ValueError("TELEGRAM_SECRET_KEY nao definido.")
 
+# Mova estas para variáveis de ambiente também!
+CAD_EMAIL = os.environ.get('CAD_EMAIL', '')
+CAD_SENHA = os.environ.get('CAD_SENHA', '')
 
+# ── Bot ───────────────────────────────────────────────────
 bot = telebot.TeleBot(BOT_TOKEN)
 
-AUTHORIZED_GROUPS = [-4753161233, -1001287387567]  # IDs dos grupos autorizados
+AUTHORIZED_GROUPS = [-4753161233, -1001287387567]
+
 
 def get_system_info():
-    # Tipo de processador e frequência
-    processor = "Informação não disponível"
-    cpu_frequency = "Informação não disponível"
+    processor = cpu_frequency = total_memory = kernel_version = "N/A"
+    total_disk = free_disk = uptime = "N/A"
     try:
-        # Não precisa de sudo para ler /proc/cpuinfo
-        result = subprocess.run(['cat', '/proc/cpuinfo'], capture_output=True, text=True, check=True)
+        result = subprocess.run(['cat', '/proc/cpuinfo'], capture_output=True, text=True)
         lines = result.stdout.splitlines()
-        processor = next((line.split(": ")[1].strip() for line in lines if "model name" in line), "Informação não disponível")
-        cpu_frequency = next((line.split(": ")[1].strip() + " MHz" for line in lines if "cpu MHz" in line), "Informação não disponível")
-    except (subprocess.CalledProcessError, FileNotFoundError, Exception) as e:
-        print(f"Erro ao obter info do processador: {e}")
-
-    # Quantidade de memória
-    total_memory = "Informação não disponível"
+        processor = next((l.split(": ")[1].strip() for l in lines if "model name" in l), "N/A")
+        cpu_frequency = next((l.split(": ")[1].strip() + " MHz" for l in lines if "cpu MHz" in l), "N/A")
+    except Exception: pass
     try:
-        # Não precisa de sudo para ler /proc/meminfo
-        result = subprocess.run(['cat', '/proc/meminfo'], capture_output=True, text=True, check=True)
+        result = subprocess.run(['cat', '/proc/meminfo'], capture_output=True, text=True)
         lines = result.stdout.splitlines()
-        mem_total_kb = next((int(line.split(":")[1].strip().split()[0]) for line in lines if "MemTotal" in line), 0)
-        total_memory = f"{mem_total_kb / (1024 ** 2):.2f} GB"
-    except (subprocess.CalledProcessError, FileNotFoundError, Exception) as e:
-        print(f"Erro ao obter info de memória: {e}")
-
-    # Versão do kernel
-    kernel_version = "Informação não disponível"
+        kb = next((int(l.split(":")[1].strip().split()[0]) for l in lines if "MemTotal" in l), 0)
+        total_memory = f"{kb / (1024**2):.2f} GB"
+    except Exception: pass
     try:
-        # Não precisa de sudo para uname -r
-        result = subprocess.run(['uname', '-r'], capture_output=True, text=True, check=True)
+        result = subprocess.run(['uname', '-r'], capture_output=True, text=True)
         kernel_version = result.stdout.strip()
-    except (subprocess.CalledProcessError, FileNotFoundError, Exception) as e:
-        print(f"Erro ao obter versão do kernel: {e}")
-
-    # Hostname
-    hostname = socket.gethostname()
-
-    # IP
-    ip_address = "Não disponível"
+    except Exception: pass
     try:
-        # socket.gethostbyname geralmente funciona sem problemas de permissão
-        ip_address = socket.gethostbyname(hostname)
-    except socket.gaierror as e:
-        print(f"Erro ao obter IP: {e}")
-
-    # Tamanho do disco e espaço livre
-    total_disk = "Informação não disponível"
-    free_disk = "Informação não disponível"
+        sv = os.statvfs('/')
+        total_disk = f"{(sv.f_blocks * sv.f_frsize) / (1024**3):.2f} GB"
+        free_disk  = f"{(sv.f_bfree  * sv.f_frsize) / (1024**3):.2f} GB"
+    except Exception: pass
     try:
-        # os.statvfs não precisa de sudo
-        statvfs = os.statvfs('/')
-        total_disk = f"{(statvfs.f_blocks * statvfs.f_frsize) / (1024 ** 3):.2f} GB"
-        free_disk = f"{(statvfs.f_bfree * statvfs.f_frsize) / (1024 ** 3):.2f} GB"
-    except OSError as e:
-        print(f"Erro ao obter info de disco: {e}")
+        result = subprocess.run(['cat', '/proc/uptime'], capture_output=True, text=True)
+        secs = float(result.stdout.split()[0])
+        uptime = str(timedelta(seconds=secs)).split('.')[0]
+    except Exception: pass
 
-    # Uptime
-    uptime = "Informação não disponível"
-    try:
-        # Não precisa de sudo para ler /proc/uptime
-        result = subprocess.run(['cat', '/proc/uptime'], capture_output=True, text=True, check=True)
-        uptime_seconds = float(result.stdout.split()[0])
-        uptime = str(timedelta(seconds=uptime_seconds)).split('.')[0]  # Remover os milissegundos
-    except (subprocess.CalledProcessError, FileNotFoundError, Exception) as e:
-        print(f"Erro ao obter uptime: {e}")
+    hostname   = socket.gethostname()
+    try:    ip = socket.gethostbyname(hostname)
+    except: ip = "N/A"
 
     return {
-        "Hostname": hostname,
-        "IP Address": ip_address,
-        "Processor": processor,
-        "CPU Frequency": cpu_frequency,
-        "Total Memory": total_memory,
-        "Kernel Version": kernel_version,
-        "Total Disk Size": total_disk,
-        "Free Disk Space": free_disk,
+        "Hostname": hostname, "IP": ip,
+        "Processador": processor, "Freq. CPU": cpu_frequency,
+        "Memoria Total": total_memory, "Kernel": kernel_version,
+        "Disco Total": total_disk, "Disco Livre": free_disk,
         "Uptime": uptime,
     }
-   
 
-def get_2fa_code(secret):
-    """Gera um código 2FA com base na chave secreta."""
-    totp = pyotp.TOTP(secret.replace(" ", ""))  # Remove espaços da chave secreta
+
+def get_2fa_code():
+    totp = pyotp.TOTP(SECRET_KEY.replace(" ", ""))
     return totp.now()
 
-@bot.message_handler(func=lambda message: message.text and message.text.strip().lower() in ["2fa", "codigo"])
+
+@bot.message_handler(func=lambda m: m.text and m.text.strip().lower() in ["2fa", "codigo"])
 def send_2fa_code(message):
     if message.chat.id in AUTHORIZED_GROUPS:
         try:
-            code = get_2fa_code(SECRET_KEY)
-            bot.reply_to(message, f"Seu código 2FA é: **{code}**", parse_mode="Markdown")
+            code = get_2fa_code()
+            bot.reply_to(message, f"Seu código 2FA é: `{code}`", parse_mode="Markdown")
         except Exception as e:
-            bot.reply_to(message, f"Erro ao gerar o código 2FA: {str(e)}")
+            bot.reply_to(message, f"Erro: {e}")
     else:
-        bot.reply_to(message, "O código 2FA só pode ser exibido em grupos autorizados.")
+        bot.reply_to(message, "Grupo não autorizado.")
 
-@bot.message_handler(func=lambda message: message.text and message.text.strip().lower() in ["server", "server_info"])
+
+@bot.message_handler(func=lambda m: m.text and m.text.strip().lower() in ["server", "server_info"])
 def send_server_info(message):
     if message.chat.id in AUTHORIZED_GROUPS:
         try:
             info = get_system_info()
-            info_message = "\n".join([f"{key}: {value}" for key, value in info.items()])
-            bot.reply_to(message, f"{info_message}", parse_mode="Markdown")
+            text = "\n".join(f"*{k}:* {v}" for k, v in info.items())
+            bot.reply_to(message, text, parse_mode="Markdown")
         except Exception as e:
-            bot.reply_to(message, f"Erro ao mostrar informações do Servidor de Hospedagem: {str(e)}")
+            bot.reply_to(message, f"Erro: {e}")
     else:
-        bot.reply_to(message, "As informações do servidor só podem exibidas em grupos autorizados.")
+        bot.reply_to(message, "Grupo não autorizado.")
 
-@bot.message_handler(func=lambda message: message.text and message.text.strip().lower() in ["cadastro", "cad"])
+
+@bot.message_handler(func=lambda m: m.text and m.text.strip().lower() in ["cadastro", "cad"])
 def send_registration_info(message):
     if message.chat.id in AUTHORIZED_GROUPS:
         try:
-            code = get_2fa_code(SECRET_KEY)
-            email = "cadveracruzv6club@gmail.com"
-            senha = "YRZ_wUgTG2WR9mHaXfBM"
+            code = get_2fa_code()
             response = (
-                f"Informações de Login para o cadastro:\n\n"
-                f"- Email: {email}\n"
-                f"- Senha: {senha}\n"
-                f"- 2FA:   {code}\n"
+                f"*Informações de Login:*\n\n"
+                f"- Email: `{CAD_EMAIL}`\n"
+                f"- Senha: `{CAD_SENHA}`\n"
+                f"- 2FA: `{code}`\n"
             )
-            bot.reply_to(message, response)
+            bot.reply_to(message, response, parse_mode="Markdown")
         except Exception as e:
-            bot.reply_to(message, f"Erro ao obter informações de cadastro: {str(e)}")
+            bot.reply_to(message, f"Erro: {e}")
     else:
-        bot.reply_to(message, "O comando 'cadastro' só pode ser usado em grupos autorizados.")
+        bot.reply_to(message, "Grupo não autorizado.")
 
-@bot.message_handler(func=lambda message: message.text and message.text.strip().lower() in ["info_grupo", "informacao_grupo", "info"])
+
+@bot.message_handler(func=lambda m: m.text and m.text.strip().lower() in ["info_grupo", "info"])
 def send_group_info(message):
     try:
         chat = message.chat
-        info = (
-            f"Informações do grupo:\n"
-            f"- Nome: {chat.title}\n"
-            f"- ID: {chat.id}\n"
-            f"- Tipo: {chat.type}\n"
-        )
-        bot.reply_to(message, info)
+        bot.reply_to(message, f"Nome: {chat.title}\nID: `{chat.id}`\nTipo: {chat.type}", parse_mode="Markdown")
     except Exception as e:
-        bot.reply_to(message, f"Erro ao obter informações do grupo: {str(e)}")
+        bot.reply_to(message, f"Erro: {e}")
 
+
+# ── Health check HTTP — necessário para Koyeb free tier ──
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"OK")
+    def log_message(self, *args): pass  # silencia logs do servidor
+
+
+def run_health_server():
+    port = int(os.environ.get("PORT", 8000))
+    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    server.serve_forever()
+
+
+# ── Main ──────────────────────────────────────────────────
 if __name__ == "__main__":
-    print("Bot está funcionando...")
+    # Inicia o servidor HTTP em thread separada
+    t = threading.Thread(target=run_health_server, daemon=True)
+    t.start()
+    print(f"Health server rodando...")
+    print("Bot iniciado...")
     bot.infinity_polling(timeout=20, long_polling_timeout=20)
