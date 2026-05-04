@@ -79,7 +79,7 @@ def send_2fa_code(message):
     if message.chat.id in AUTHORIZED_GROUPS:
         try:
             code = get_2fa_code()
-            bot.reply_to(message, f"Seu código 2FA é: `{code}`", parse_mode="Markdown")
+            bot.reply_to(message, f"O código 2FA é: `{code}`", parse_mode="Markdown")
         except Exception as e:
             bot.reply_to(message, f"Erro: {e}")
     else:
